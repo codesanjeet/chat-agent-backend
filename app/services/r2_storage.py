@@ -65,6 +65,8 @@ class R2Storage:
 
     # ── Key builders ──────────────────────────────────────────────────────────
 
+
+
     @staticmethod
     def build_key(tenant_id: str, folder: str, filename: str) -> str:
         """Generic key for non-gallery uploads (avatars, notifications, etc).
@@ -72,6 +74,19 @@ class R2Storage:
         """
         ext = Path(filename).suffix.lower()
         return f"businesses/{tenant_id}/{folder}/{uuid.uuid4().hex}{ext}"
+
+    @staticmethod
+    def build_profile_asset_key(tenant_id: uuid.UUID, asset: str, filename: str) -> str:
+        """
+        Fixed, predictable key for one-per-tenant profile assets (logo, QR
+        code) -- NOT a random uuid like gallery images, since there's only
+        ever one active logo/QR per tenant and re-uploading should replace
+        it in place rather than accumulate orphaned old files.
+
+        Layout: businesses/<tenant_id>/gallery/<asset><ext>
+        """
+        ext = Path(filename).suffix.lower()
+        return f"businesses/{tenant_id}/gallery/{asset}{ext}"
 
     @staticmethod
     def build_gallery_key(tenant_id: uuid.UUID, parent_id: uuid.UUID | None, filename: str) -> str:

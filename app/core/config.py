@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
     EMBEDDING_MODEL : str = "text-embedding-3-small"
     LOCAL_UPLOAD_DIR:str = ""
-    MAX_UPLOAD_MB : str = ""
+    MAX_UPLOAD_MB : int = 5
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [

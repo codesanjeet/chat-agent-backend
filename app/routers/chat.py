@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.crud import chat as chat_crud
 from app.crud import escalation as escalation_crud
+from app.crud import lead as lead_crud
 from app.crud.user import get_active_tenant_id_by_slug
 from app.models.user import UserDB
 from app.schemas.chat import ChatMessageIn, ChatMessageOut, EscalatedQuestionOut, ResolveEscalationIn
@@ -20,22 +21,12 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 async def send_message(
     slug: str, payload: ChatMessageIn, db: AsyncSession = Depends(get_db)
 ):
-    """Public -- called by the embedded widget. No auth: the end user talking
-    to a business's chatbot is anonymous, identified only by `session_id`
-    (generated client-side). Tenant is resolved from the slug in the URL,
-    e.g. kiteum.app/chat/joes-pizza -> POST /chat/joes-pizza/message."""
     tenant_id = await get_active_tenant_id_by_slug(db, slug)
     if tenant_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Chatbot not found")
     result = await run_chat_turn(db, tenant_id, payload.session_id, payload.message)
     return ChatMessageOut(**result)
 
-
-# ---------------------------------------------------------------------------
-# Admin-facing conversation history -- session list + paginated thread.
-# Unchanged: authenticated via get_current_user, not a slug/tenant_id path
-# param, so nothing here needs to change.
-# ---------------------------------------------------------------------------
 
 class SessionSummaryOut(BaseModel):
     session_id: str
@@ -49,9 +40,44 @@ class SessionListOut(BaseModel):
     total: int
 
 
+class GalleryItemRefOut(BaseModel):
+    item_id: str
+    item_type: str
+    title: str | None = None
+    image_url: str | None = None
+    external_url: str | None = None
+    parent_folder: dict | None = None
+
+
+class LinkRefOut(BaseModel):
+    platform: str
+    url: str
+    label: str | None = None
+
+
+class LeadFormRefOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    requires_payment: bool
+
+
 class ChatHistoryItemOut(BaseModel):
     role: str
     content: str
+    created_at: object
+    gallery_items_shown: list[GalleryItemRefOut] | None = None
+    links_shown: list[LinkRefOut] | None = None
+    lead_form: LeadFormRefOut | None = None
+    was_escalated: bool = False
+
+
+class LeadSummaryOut(BaseModel):
+    id: uuid.UUID
+    lead_form_id: uuid.UUID | None
+    data: dict
+    status: str
+    payment_status: str | None
+    payment_proof_url: str | None
     created_at: object
 
     model_config = {"from_attributes": True}
@@ -60,6 +86,7 @@ class ChatHistoryItemOut(BaseModel):
 class MessagesPageOut(BaseModel):
     messages: list[ChatHistoryItemOut]
     total: int
+    leads: list[LeadSummaryOut] = []
 
 
 @router.get("/sessions", response_model=SessionListOut)
@@ -86,8 +113,33 @@ async def get_session_messages(
     )
     if total == 0:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+    form_ids = {m.lead_form_id for m in messages if m.lead_form_id}
+    forms_by_id = await lead_crud.get_lead_forms_by_ids(db, user.id, form_ids) if form_ids else {}
+
+    leads = await lead_crud.get_leads_by_session(db, user.id, session_id)
+
+    items = [
+        ChatHistoryItemOut(
+            role=m.role,
+            content=m.content,
+            created_at=m.created_at,
+            gallery_items_shown=m.gallery_items_shown,
+            links_shown=m.links_shown,
+            lead_form=(
+                LeadFormRefOut(id=f.id, name=f.name, requires_payment=f.requires_payment)
+                if (f := forms_by_id.get(m.lead_form_id))
+                else None
+            ),
+            was_escalated=m.was_escalated,
+        )
+        for m in messages
+    ]
+
     return MessagesPageOut(
-        messages=[ChatHistoryItemOut.model_validate(m) for m in messages], total=total
+        messages=items,
+        total=total,
+        leads=[LeadSummaryOut.model_validate(l) for l in leads],
     )
 
 

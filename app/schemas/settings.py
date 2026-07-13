@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 
 
 class BusinessLinkIn(BaseModel):
@@ -25,7 +25,7 @@ class ProfileUpdateIn(BaseModel):
     # changing it needs its own re-verification flow, not a plain settings PATCH.
     business_name: str | None = None
     business_category: str | None = None
-    contact_number: int | None = None
+    contact_number: str | None = None
 
 
 class UsageOut(BaseModel):
@@ -54,8 +54,9 @@ class SettingsOut(BaseModel):
     business_name: str | None
     business_category: str | None
     email: str
-    contact_number: int | None
+    contact_number: str | None
     logo: str | None
+    slug: str
     payment_qr_image: str | None
     profile_completed: bool
     is_configured: bool
@@ -65,3 +66,16 @@ class SettingsOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SlugUpdateIn(BaseModel):
+    slug: str = Field(..., min_length=1, max_length=255)
+
+
+class PublicBusinessOut(BaseModel):
+    """Minimal, unauthenticated view of a tenant -- used by the public chat
+    widget to render its own branding + payment QR. Deliberately excludes
+    everything else on UserDB (email, contact_number, usage, etc.)."""
+
+    business_name: str | None
+    logo: str | None
+    payment_qr_image: str | None

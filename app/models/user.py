@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid, event, func,BigInteger,Integer
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid, event, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -18,7 +18,7 @@ class UserDB(Base):
     business_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     business_category: Mapped[str| None] = mapped_column(String(255), nullable=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    contact_number : Mapped[int] = mapped_column(Integer,nullable=True, index=True)
+    contact_number: Mapped[str | None] = mapped_column(String(15), nullable=True)
 
     # Nullable: a user who only ever used OTP has no Google identity yet.
     # Postgres allows multiple NULLs under a unique constraint, so this is safe.
@@ -96,40 +96,28 @@ class OtpCodeDB(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+import uuid
+from datetime import datetime
 
-# class UsageDB(Base):
-#     __tablename__ = "institution_usage"
- 
-#     id: Mapped[int] = mapped_column(primary_key=True)
- 
-#     user_id: Mapped[uuid.UUID] = mapped_column(
-#         Uuid, ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
-#     )
- 
-#     ai_credits_balance: Mapped[int] = mapped_column(BigInteger, default=0)
-#     email_balance: Mapped[int] = mapped_column(default=200)
-#     ai_voice_agents_balance_min: Mapped[int] = mapped_column(default=0)
-#     storage_used_mb: Mapped[float] = mapped_column(default=0)
- 
-#     # --- NEW: embedding token budget (caps OpenAI embedding spend per tenant) ---
-#     embedding_tokens_used: Mapped[int] = mapped_column(BigInteger, default=0)
-#     embedding_token_limit: Mapped[int] = mapped_column(BigInteger, default=2800)
-#     # --- END NEW ---
- 
-#     user: Mapped["UserDB"] = relationship(
-#         back_populates="usage",
-#         uselist=False,
-#         lazy="selectin",
-#     )
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .base import Base
 
 
 class LeadFormDB(Base):
+    """Owner-defined template for what the chatbot should collect from a
+    visitor (name, budget, move-in date, etc.). The LLM only decides WHICH
+    form to trigger and reads its schema to know what to ask for -- the
+    end user's actual answers are collected client-side and posted once as
+    a LeadDB row, not streamed back turn-by-turn."""
+
     __tablename__ = "lead_forms"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
-    name: Mapped[str] = mapped_column(String(255))          # "Property Inquiry", "Booking"
+    name: Mapped[str] = mapped_column(String(255))
     trigger_intent: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # optional hint for when the bot should use THIS form vs another,
     # e.g. "site visit", "quote request" -- matched against user intent
@@ -144,24 +132,34 @@ class LeadFormDB(Base):
     # ]}
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     user: Mapped["UserDB"] = relationship()
 
 
 class LeadDB(Base):
+    """A single submitted response to a LeadFormDB, tied to an anonymous
+    widget session. Not tied to any user account on the visitor's side --
+    session_id is the only identifier."""
+
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     lead_form_id: Mapped[uuid.UUID | None] = mapped_column(
-    ForeignKey("lead_forms.id", ondelete="SET NULL"), nullable=True, index=True
-)
+        ForeignKey("lead_forms.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     session_id: Mapped[str] = mapped_column(String(255), index=True)
 
     data: Mapped[dict] = mapped_column(JSON, default=dict)   # {"name": "...", "budget": "..."}
     status: Mapped[str] = mapped_column(String(50), default="in_progress")  # in_progress/complete
     payment_status: Mapped[str | None] = mapped_column(String(50), nullable=True)  # pending/verified/rejected
 
+    payment_proof_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

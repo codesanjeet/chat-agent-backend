@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta, timezone
-
+import hmac
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -127,7 +127,7 @@ async def verify_otp(payload: OtpVerify, request: Request, response: Response, d
     if otp.attempts >= OTP_MAX_ATTEMPTS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Too many incorrect attempts, request a new code")
 
-    if otp.code_hash != hash_otp(payload.code, email):
+    if not hmac.compare_digest(otp.code_hash, hash_otp(payload.code, email)):
         await register_failed_otp_attempt(db, otp)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Incorrect code")
 

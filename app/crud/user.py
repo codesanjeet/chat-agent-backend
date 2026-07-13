@@ -63,13 +63,10 @@ async def complete_profile(
     user: UserDB,
     business_name: str,
     business_category: str,
-    logo: str | None = None,
     slug: str | None = None,
 ) -> UserDB:
     user.business_name = business_name
     user.business_category = business_category
-    if logo is not None:
-        user.logo = logo
     user.profile_completed = True
 
     if slug:
@@ -100,3 +97,8 @@ async def get_active_tenant_id_by_slug(db: AsyncSession, slug: str) -> uuid.UUID
     if tenant is None or tenant.is_blocked:
         return None
     return tenant.id
+
+
+async def get_payment_qr_by_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> str | None:
+    result = await db.execute(select(UserDB.payment_qr_image).where(UserDB.id == tenant_id))
+    return result.scalar_one_or_none()

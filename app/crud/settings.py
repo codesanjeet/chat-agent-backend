@@ -1,11 +1,13 @@
 import uuid
 
+from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import PlanDB, UsageDB, UserPlanDB
 from app.models.user import UserDB
 from app.schemas.settings import UsageOut  # adjust import path to wherever UsageOut actually lives
+from app.services.r2_storage import r2
 
 # Minimum fields required before a business profile counts as "complete" --
 # drives the profile_completed flag shown in onboarding/dashboard nudges.
@@ -62,7 +64,7 @@ async def update_profile(
     user: UserDB,
     business_name: str | None,
     business_category: str | None,
-    contact_number: int | None,
+    contact_number: str | None,
 ) -> UserDB:
     """Partial update -- a field is only changed if explicitly passed (not
     None). To intentionally clear business_name/business_category, pass an
@@ -79,13 +81,64 @@ async def update_profile(
     return user
 
 
-async def set_logo(db: AsyncSession, user: UserDB, url: str | None) -> UserDB:
+# ── Logo / QR (R2-backed profile assets) ─────────────────────────────────────
+
+def _key_from_url(url: str | None) -> str | None:
+    """Recover an R2 object key from a stored public URL, e.g.
+    'https://pub-xxx.r2.dev/businesses/abc/gallery/logo.png' ->
+    'businesses/abc/gallery/logo.png'. Returns None if the URL doesn't
+    match our public base (e.g. was never set, or points elsewhere)."""
+    base = r2.public_url("")
+    if url and url.startswith(base):
+        return url.replace(base, "", 1)
+    return None
+
+
+async def _upload_profile_asset(
+    tenant_id: uuid.UUID, asset: str, file: UploadFile, content: bytes, content_type: str, old_url: str | None
+) -> str:
+    unique_asset = f"{uuid.uuid4().hex}_{asset}"
+    new_key = r2.build_profile_asset_key(tenant_id, unique_asset, file.filename or "")
+    await r2.upload(new_key, content, content_type)  # <-- detected type, not file.content_type
+    new_url = r2.public_url(new_key)
+    old_key = _key_from_url(old_url)
+    if old_key and old_key != new_key:
+        await r2.delete(old_key)
+    return new_url
+
+
+async def set_logo_from_upload(
+    db: AsyncSession, user: UserDB, file: UploadFile, content: bytes, content_type: str
+) -> UserDB:
+    url = await _upload_profile_asset(user.id, "logo", file, content, content_type, old_url=user.logo)
     user.logo = url
     await db.flush()
     return user
 
 
-async def set_payment_qr(db: AsyncSession, user: UserDB, url: str | None) -> UserDB:
+
+async def clear_logo(db: AsyncSession, user: UserDB) -> UserDB:
+    old_key = _key_from_url(user.logo)
+    if old_key:
+        await r2.delete(old_key)
+    user.logo = None
+    await db.flush()
+    return user
+
+
+async def set_payment_qr_from_upload(
+    db: AsyncSession, user: UserDB, file: UploadFile, content: bytes, content_type: str
+) -> UserDB:
+    url = await _upload_profile_asset(user.id, "qr", file, content, content_type, old_url=user.payment_qr_image)
     user.payment_qr_image = url
+    await db.flush()
+    return user
+
+
+async def clear_payment_qr(db: AsyncSession, user: UserDB) -> UserDB:
+    old_key = _key_from_url(user.payment_qr_image)
+    if old_key:
+        await r2.delete(old_key)
+    user.payment_qr_image = None
     await db.flush()
     return user
