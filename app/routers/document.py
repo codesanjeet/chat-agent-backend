@@ -3,7 +3,8 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
-import time
+from app.services.ssrf_guard import assert_safe_url
+from app import rate_limiter
 from app.core.database import get_db
 from app.crud import document as document_crud
 from app.crud import fact as fact_crud
@@ -20,10 +21,10 @@ from app.schemas.document import (
 )
 from app.services import extraction
 from app.services.deps import get_current_user
+from app.services.image_validation import validate_and_clean_image
+from app.services.pdf_validation import validate_pdf
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-
-ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 
 @router.post("/text", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
@@ -42,10 +43,12 @@ async def upload_text(
 async def upload_image(
     file: UploadFile = File(...), user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    if file.content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unsupported image type")
-    content = await file.read()
-    result = await extraction.extract_text_from_image(content, file.content_type)
+    if not await rate_limiter.check(f"upload_image:{user.id}", max_attempts=5, window_seconds=300):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
+    raw_bytes = await file.read()
+    clean_bytes, content_type = validate_and_clean_image(raw_bytes)
+    result = await extraction.extract_text_from_image(clean_bytes, content_type)
     document = await document_crud.create_document_preview(
         db, tenant_id=user.id, source_type="image", source_label=file.filename,
         extracted_text=result.text, confidence=result.confidence, reason=result.reason,
@@ -58,10 +61,12 @@ async def upload_image(
 async def upload_pdf(
     file: UploadFile = File(...), user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    if file.content_type != "application/pdf":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "File must be a PDF")
-    content = await file.read()
-    result = await extraction.extract_text_from_pdf(content)
+    if not await rate_limiter.check(f"upload_pdf:{user.id}", max_attempts=5, window_seconds=300):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
+    raw_bytes = await file.read()
+    clean_bytes = validate_pdf(raw_bytes)
+    result = await extraction.extract_text_from_pdf(clean_bytes)
     document = await document_crud.create_document_preview(
         db, tenant_id=user.id, source_type="pdf", source_label=file.filename,
         extracted_text=result.text, confidence=result.confidence, reason=result.reason,
@@ -74,9 +79,14 @@ async def upload_pdf(
 async def upload_weblink(
     payload: WeblinkIn, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
+    if not await rate_limiter.check(f"upload_weblink:{user.id}", max_attempts=5, window_seconds=300):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     final_url = payload.url
     if not final_url.startswith(("https://","http://")):
         final_url = f"https://{final_url}"
+
+    assert_safe_url(final_url)
     result = await extraction.extract_text_from_weblink(final_url)
     document = await document_crud.create_document_preview(
         db, tenant_id=user.id, source_type="weblink", source_label=payload.source_label or final_url,
@@ -111,9 +121,6 @@ async def edit_document(
 async def confirm_document(
     document_id: uuid.UUID, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    print(f"[route] confirm request received at {time.strftime('%X')} for {document_id}")
-    document = await document_crud.get_document(db, user.id, document_id)
-    print(f"[route] get_document returned at {time.strftime('%X')}: {'FOUND' if document else 'NONE'}")
     document = await document_crud.get_document(db, user.id, document_id)
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")

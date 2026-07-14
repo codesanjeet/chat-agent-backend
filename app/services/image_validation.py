@@ -5,7 +5,7 @@ import io
 
 import magic
 from fastapi import HTTPException, status
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.config import settings as app_settings
 
@@ -70,6 +70,7 @@ def validate_and_clean_image(raw_bytes: bytes) -> tuple[bytes, str]:
     try:
         with Image.open(io.BytesIO(raw_bytes)) as img:
             img.load()  # force full decode now, while we still control errors
+            img = ImageOps.exif_transpose(img)  # bake EXIF rotation into pixels before we drop the tag
             # Flatten to RGB for JPEG (no alpha channel support); keep RGBA
             # for PNG/WEBP where transparency is meaningful.
             if pillow_format == "JPEG" and img.mode in ("RGBA", "P"):

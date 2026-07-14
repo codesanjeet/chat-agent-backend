@@ -1,11 +1,16 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import is_expired, otp_expiry
 from app.models.user import OtpCodeDB, UserDB, UserSessionDB
+from app.models.billing import UserPlanDB, UsageDB
+
+# Plan id for whatever plan new signups land on at launch (your "free" plan row).
+DEFAULT_PLAN_ID = 2
+BILLING_PERIOD_DAYS = 30
 
 # --- Users -------------------------------------------------------------------
 
@@ -17,6 +22,22 @@ async def get_user_by_email(db: AsyncSession, email: str) -> UserDB | None:
 
 async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> UserDB | None:
     return await db.get(UserDB, user_id)
+
+
+async def _create_default_billing(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Every new user gets exactly one active plan row and one usage row.
+    Called once, right after the user row is created."""
+    now = datetime.now(timezone.utc)
+    db.add(
+        UserPlanDB(
+            user_id=user_id,
+            plan_id=DEFAULT_PLAN_ID,
+            billing_period_start=now,
+            billing_period_end=now + timedelta(days=BILLING_PERIOD_DAYS),
+        )
+    )
+    db.add(UsageDB(user_id=user_id))
+    await db.commit()
 
 
 async def get_or_create_user_by_email(
@@ -41,6 +62,7 @@ async def get_or_create_user_by_email(
         db.add(user)
         await db.commit()
         await db.refresh(user)
+        await _create_default_billing(db, user.id)
     elif google_id and not user.google_id:
         user.google_id = google_id
         user.google_linked_at = datetime.now(timezone.utc)

@@ -64,6 +64,8 @@ async def run_chat_turn(db: AsyncSession, tenant_id: uuid.UUID, session_id: str,
 
     # 3. Ask the LLM.
     result = await generate_chat_response(
+        db=db,
+        tenant_id=tenant_id,
         user_message=user_message,
         facts=facts,
         links=links,

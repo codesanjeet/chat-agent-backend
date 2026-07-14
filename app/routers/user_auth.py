@@ -202,6 +202,9 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
     token already issued stays valid until it naturally expires within
     ACCESS_TOKEN_EXPIRE_MINUTES -- that short window is the accepted tradeoff
     for not hitting the DB on every single request."""
+    ip = _client_ip(request)
+    if not await rate_limiter.check(f"logout_ip:{ip}", max_attempts=30, window_seconds=600):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
     refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
     if refresh_token:
         payload = decode_token(refresh_token)

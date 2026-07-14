@@ -101,7 +101,7 @@ async def upload_logo(
     raw_bytes = await file.read()
     clean_bytes, content_type = validate_and_clean_image(raw_bytes)
 
-    await settings_crud.set_logo_from_upload(db, user, file, raw_bytes)
+    await settings_crud.set_logo_from_upload(db, user, file, clean_bytes, content_type=content_type)
     await db.commit()
     await db.refresh(user)
     return await _to_out(db, user)
@@ -128,7 +128,7 @@ async def upload_payment_qr(
     raw_bytes = await file.read()
     clean_bytes, content_type = validate_and_clean_image(raw_bytes)
 
-    await settings_crud.set_payment_qr_from_upload(db, user, file, raw_bytes)
+    await settings_crud.set_payment_qr_from_upload(db, user, file, clean_bytes, content_type=content_type)
     await db.commit()
     await db.refresh(user)
     return await _to_out(db, user)

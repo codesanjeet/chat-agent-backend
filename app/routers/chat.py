@@ -1,6 +1,8 @@
 import uuid
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from app import rate_limiter
+
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,13 +19,27 @@ from app.services.deps import get_current_user
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @router.post("/{slug}/message", response_model=ChatMessageOut)
 async def send_message(
-    slug: str, payload: ChatMessageIn, db: AsyncSession = Depends(get_db)
+    slug: str, payload: ChatMessageIn, request: Request, db: AsyncSession = Depends(get_db)
 ):
+    ip = _client_ip(request)
+    if not await rate_limiter.check(f"chat_message_ip:{ip}", max_attempts=20, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     tenant_id = await get_active_tenant_id_by_slug(db, slug)
     if tenant_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Chatbot not found")
+
     result = await run_chat_turn(db, tenant_id, payload.session_id, payload.message)
     return ChatMessageOut(**result)
 

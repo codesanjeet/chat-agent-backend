@@ -21,12 +21,16 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
+from app.services.ssrf_guard import assert_safe_url
 
 _genai_client = genai.Client(
     vertexai=True,
     project="kiteum-production",
     location="us-central1"
 )
+
+MAX_WEBLINK_REDIRECTS = 5
+MAX_WEBLINK_RESPONSE_BYTES = 5 * 1024 * 1024  # 5MB -- this is HTML/text, not a file upload
 
 
 @dataclass
@@ -144,15 +148,53 @@ async def clean_scraped_text(raw_text: str) -> str:
     return data.get("text", raw_text)  # fall back to raw text if the model returns nothing usable
 
 
+async def _fetch_weblink_safely(url: str) -> str | None:
+    """Fetches `url` with redirects followed manually, re-validating each hop
+    against assert_safe_url before following it. httpx's built-in
+    follow_redirects=True would skip that re-check and defeat the SSRF guard
+    entirely -- a safe initial URL can still 302 to an internal address.
+
+    Also caps response size so a malicious or huge page can't blow up memory.
+    Returns None (caller treats as unreadable) on any failure.
+    """
+    assert_safe_url(url)
+    current_url = url
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+        for _ in range(MAX_WEBLINK_REDIRECTS + 1):
+            try:
+                async with client.stream(
+                    "GET", current_url, headers={"User-Agent": "Mozilla/5.0 (compatible; TenantBot/1.0)"}
+                ) as resp:
+                    if resp.is_redirect:
+                        next_url = resp.headers.get("location")
+                        if not next_url:
+                            return None
+                        next_url = str(httpx.URL(current_url).join(next_url))
+                        assert_safe_url(next_url)  # re-validate the redirect target before following it
+                        current_url = next_url
+                        continue
+
+                    resp.raise_for_status()
+
+                    body = b""
+                    async for chunk in resp.aiter_bytes():
+                        body += chunk
+                        if len(body) > MAX_WEBLINK_RESPONSE_BYTES:
+                            return None
+                    return body.decode(resp.encoding or "utf-8", errors="replace")
+            except httpx.HTTPError:
+                return None
+
+    return None  # too many redirects
+
+
 async def extract_text_from_weblink(url: str) -> ExtractionResult:
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; TenantBot/1.0)"})
-            resp.raise_for_status()
-    except httpx.HTTPError:
+    html = await _fetch_weblink_safely(url)
+    if html is None:
         return ExtractionResult(text="", confidence="low", reason="unreadable")
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
     raw_text = " ".join(soup.stripped_strings)
@@ -162,8 +204,6 @@ async def extract_text_from_weblink(url: str) -> ExtractionResult:
 
     cleaned_text = await clean_scraped_text(raw_text)
     return ExtractionResult(text=cleaned_text, confidence="high", reason="ok")
-
-
 
 
 FACT_SPLIT_PROMPT = """You are organizing business content for a chatbot knowledge base.

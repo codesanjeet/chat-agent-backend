@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import rate_limiter
 from app.core.database import get_db
 from app.crud import lead as lead_crud
-from app.crud.user import get_active_tenant_id_by_slug,get_payment_qr_by_tenant
+from app.crud.user import get_active_tenant_id_by_slug, get_payment_qr_by_tenant
 from app.models.user import UserDB
 from app.schemas.lead import (
     LeadFormCreateIn,
@@ -36,11 +36,19 @@ def _client_ip(request: Request) -> str:
 # These never collide with the owner-only "/forms" or "/{lead_id}" routes
 # below, since a literal segment ("forms" / "submit" / "payment-proof")
 # always sits in a different position than a bare {lead_id} would.
+#
+# Every public route is rate-limited by IP -- these are unauthenticated
+# and reachable by anyone, so they're the easiest target for scraping or
+# a scripted hammer if left unprotected.
 
 @router.get("/{slug}/forms", response_model=list[LeadFormOut])
-async def list_public_forms(slug: str, db: AsyncSession = Depends(get_db)):
+async def list_public_forms(slug: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Lets the widget fetch every form a tenant has configured so it can
     match against user intent or hand the list to the LLM to pick from."""
+    ip = _client_ip(request)
+    if not await rate_limiter.check(f"public_forms_ip:{ip}", max_attempts=60, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     tenant_id = await get_active_tenant_id_by_slug(db, slug)
     if tenant_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
@@ -49,7 +57,11 @@ async def list_public_forms(slug: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{slug}/forms/{form_id}", response_model=LeadFormOut)
-async def get_public_form(slug: str, form_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_public_form(slug: str, form_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    ip = _client_ip(request)
+    if not await rate_limiter.check(f"public_form_detail_ip:{ip}", max_attempts=60, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     tenant_id = await get_active_tenant_id_by_slug(db, slug)
     if tenant_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
@@ -130,6 +142,12 @@ async def upload_payment_proof(
 # ── Owner: lead form templates ───────────────────────────────────────────────
 # Declared before the /{lead_id} routes below so "/leads/forms" resolves
 # as this literal segment, not as lead_id="forms".
+#
+# Rate limits here are keyed by user.id, not IP: these are authenticated
+# routes, but an authenticated account (or a compromised/leaked token) can
+# still spam writes just as easily as an anonymous client can spam public
+# ones -- auth alone doesn't cap request volume, so every route gets its
+# own limiter the same as the public routes above.
 
 @router.post("/forms", response_model=LeadFormOut, status_code=status.HTTP_201_CREATED)
 async def create_form(
@@ -154,12 +172,16 @@ async def create_form(
 
 @router.get("/forms", response_model=list[LeadFormOut])
 async def list_forms(user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await rate_limiter.check(f"list_forms:{user.id}", max_attempts=100, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
     forms = await lead_crud.list_lead_forms(db, user.id)
     return [LeadFormOut.model_validate(f) for f in forms]
 
 
 @router.get("/forms/{form_id}", response_model=LeadFormOut)
 async def get_form(form_id: uuid.UUID, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await rate_limiter.check(f"get_form:{user.id}", max_attempts=100, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
     form = await lead_crud.get_lead_form(db, user.id, form_id)
     if form is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found")
@@ -198,6 +220,9 @@ async def update_form(
 async def delete_form(
     form_id: uuid.UUID, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
+    if not await rate_limiter.check(f"delete_form:{user.id}", max_attempts=20, window_seconds=600):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     form = await lead_crud.get_lead_form(db, user.id, form_id)
     if form is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found")
@@ -214,12 +239,16 @@ async def list_leads(
     user: UserDB = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if not await rate_limiter.check(f"list_leads:{user.id}", max_attempts=100, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
     leads = await lead_crud.list_leads(db, user.id, status=status_filter, payment_status=payment_status)
     return [LeadOut.model_validate(l) for l in leads]
 
 
 @router.get("/{lead_id}", response_model=LeadOut)
 async def get_lead(lead_id: uuid.UUID, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await rate_limiter.check(f"get_lead:{user.id}", max_attempts=100, window_seconds=60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
     lead = await lead_crud.get_lead(db, user.id, lead_id)
     if lead is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
@@ -236,6 +265,9 @@ async def update_payment_status(
     """MVP payment flow: business manually verifies the uploaded screenshot
     against payments they've actually received and flips this status --
     no payment gateway integration in this pass."""
+    if not await rate_limiter.check(f"update_payment_status:{user.id}", max_attempts=30, window_seconds=600):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     lead = await lead_crud.get_lead(db, user.id, lead_id)
     if lead is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
@@ -248,6 +280,9 @@ async def update_payment_status(
 async def delete_lead(
     lead_id: uuid.UUID, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
+    if not await rate_limiter.check(f"delete_lead:{user.id}", max_attempts=20, window_seconds=600):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests, try again later")
+
     lead = await lead_crud.get_lead(db, user.id, lead_id)
     if lead is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")

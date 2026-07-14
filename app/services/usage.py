@@ -18,7 +18,7 @@ import uuid
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+import math
 from app.models.billing import PlanDB, UsageDB, UserPlanDB
 
 MAX_SINGLE_UPLOAD_TOKENS = 800  # cap per individual document/gallery-image submission
@@ -102,3 +102,52 @@ async def get_remaining_tokens(db: AsyncSession, tenant_id: uuid.UUID) -> int:
     if usage is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Usage record not found for tenant")
     return max(0, limit - usage.embedding_tokens_used)
+
+
+# for ai credit 
+async def _get_ai_credit_limit(db: AsyncSession, tenant_id: uuid.UUID) -> int:
+    result = await db.execute(
+        select(PlanDB.ai_credits_limit)
+        .join(UserPlanDB, UserPlanDB.plan_id == PlanDB.id)
+        .where(UserPlanDB.user_id == tenant_id)
+    )
+    limit = result.scalar_one_or_none()
+    if limit is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No active plan found for tenant")
+    return limit
+
+
+async def check_ai_credits_available(db: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Cheap guard called BEFORE the Gemini call -- no row lock, since the
+    exact cost of THIS turn isn't known until Gemini responds."""
+    limit = await _get_ai_credit_limit(db, tenant_id)
+    result = await db.execute(select(UsageDB.ai_credits_used).where(UsageDB.user_id == tenant_id))
+    used = result.scalar_one_or_none()
+    if used is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Usage record not found for tenant")
+    if used >= limit:
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            "You've used all of your AI credits for this billing period. Upgrade your plan to keep chatting.",
+        )
+
+
+# Gemini 2.5 Flash pricing ratio: output tokens cost ~8.3x input tokens.
+# Credits are expressed in "input-token equivalents".
+OUTPUT_TOKEN_WEIGHT = 8.3
+
+
+async def charge_ai_credits(db: AsyncSession, tenant_id: uuid.UUID, prompt_tokens: int, completion_tokens: int) -> None:
+    """Call AFTER the Gemini call returns, with its ACTUAL usage_metadata."""
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        return
+
+    weighted_credits = prompt_tokens + (completion_tokens * OUTPUT_TOKEN_WEIGHT)
+    credits = math.ceil(weighted_credits)  # round up so you never under-charge on fractional credits
+
+    if credits <= 0:
+        return
+
+    usage = await _get_usage_for_update(db, tenant_id)
+    usage.ai_credits_used += credits
+    await db.flush()

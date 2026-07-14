@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 
 from google import genai
 from google.genai import types
-
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services import usage as usage_service
 from app.core.config import settings
 from app.models.chat import ChatMessageDB
 from app.models.document import BusinessFactDB, DocumentChunk
@@ -196,7 +197,11 @@ def _parse_uuid_list(values: list | None) -> list[uuid.UUID]:
     return [p for p in parsed if p is not None]
 
 
+
+
 async def generate_chat_response(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
     user_message: str,
     facts: list[BusinessFactDB],
     links: list[dict],
@@ -205,6 +210,8 @@ async def generate_chat_response(
     gallery_candidates: list[dict],
     history: list[ChatMessageDB],
 ) -> ChatAgentResult:
+    await usage_service.check_ai_credits_available(db, tenant_id)
+
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         facts_block=_facts_block(facts),
         links_block=_links_block(links),
@@ -219,6 +226,12 @@ async def generate_chat_response(
         contents=[prompt, f"User's latest message: {user_message}"],
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    prompt_tokens = getattr(usage_meta, "prompt_token_count", 0) or 0
+    completion_tokens = getattr(usage_meta, "candidates_token_count", 0) or 0
+    await usage_service.charge_ai_credits(db, tenant_id, prompt_tokens, completion_tokens)
+
     data = _extract_json(response.text)
 
     return ChatAgentResult(
