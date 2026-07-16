@@ -1,3 +1,4 @@
+from app.services.email import send_welcome_email
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -7,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import is_expired, otp_expiry
 from app.models.user import OtpCodeDB, UserDB, UserSessionDB
 from app.models.billing import UserPlanDB, UsageDB
+import logging
 
+logger = logging.getLogger(__name__)
 # Plan id for whatever plan new signups land on at launch (your "free" plan row).
-DEFAULT_PLAN_ID = 2
+DEFAULT_PLAN_ID = 6
 BILLING_PERIOD_DAYS = 30
 
 # --- Users -------------------------------------------------------------------
@@ -45,11 +48,6 @@ async def get_or_create_user_by_email(
     email: str,
     google_id: str | None = None,
 ) -> UserDB:
-    """Single source of truth for signup. Whether someone arrives via Google or
-    via OTP, they end up as the same kind of row -- and if the same email uses
-    both methods (e.g. OTP first, Google later), it's the same account, not a
-    duplicate: we look up by email first, and only attach google_id if missing.
-    """
     email = email.lower().strip()
     user = await get_user_by_email(db, email)
 
@@ -63,6 +61,13 @@ async def get_or_create_user_by_email(
         await db.commit()
         await db.refresh(user)
         await _create_default_billing(db, user.id)
+
+        # Fire-and-forget: don't let a flaky email provider fail signup.
+        try:
+            await send_welcome_email(user.email)
+        except Exception:
+            logger.exception("Failed to send welcome email to %s", user.email)
+
     elif google_id and not user.google_id:
         user.google_id = google_id
         user.google_linked_at = datetime.now(timezone.utc)
@@ -70,7 +75,6 @@ async def get_or_create_user_by_email(
         await db.refresh(user)
 
     return user
-
 
 async def touch_last_login(db: AsyncSession, user: UserDB) -> None:
     user.last_login_at = datetime.now(timezone.utc)

@@ -46,3 +46,24 @@ async def send_otp_email(to: str, code: str) -> None:
     </div>
     """
     await _send(to, "Your login code", html)
+
+
+
+
+async def send_welcome_email(to: str) -> None:
+    html = """
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+      <h2 style="color:#0B0F19;">Welcome!</h2>
+      <p style="color:#475569;">
+        Thanks for signing up — your account is ready to go.
+      </p>
+      <p style="color:#475569;">
+        Need help anytime? Our AI chat support is available 24x7 —
+        <a href="https://agent.kiteum.com/chat/kiteum" style="color:#2B4EFF;">chat with us here</a>.
+      </p>
+      <p style="color:#94a3b8;font-size:12px;">
+        This is an automated message. If you didn't create this account, you can ignore it.
+      </p>
+    </div>
+    """
+    await _send(to, "Welcome to Kiteum Agent", html)

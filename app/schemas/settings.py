@@ -56,7 +56,7 @@ class SettingsOut(BaseModel):
     email: str
     contact_number: str | None
     logo: str | None
-    slug: str
+    slug: str | None
     payment_qr_image: str | None
     profile_completed: bool
     is_configured: bool

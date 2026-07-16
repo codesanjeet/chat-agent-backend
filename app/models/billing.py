@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-
+from sqlalchemy import DateTime
 from sqlalchemy import BigInteger, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,8 +24,8 @@ class UserPlanDB(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), unique=True)
     plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"))
-    billing_period_start: Mapped[datetime]
-    billing_period_end: Mapped[datetime]
+    billing_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    billing_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class UsageDB(Base):

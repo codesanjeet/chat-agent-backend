@@ -4,7 +4,7 @@ import uuid
 class CompleteProfileRequest(BaseModel):
     business_name: str
     business_category: str
-    slug: str | None = None  # optional custom slug from the profile form
+    slug: str | None = None  
 
     @field_validator("business_name", "business_category")
     @classmethod
