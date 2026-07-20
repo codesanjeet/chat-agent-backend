@@ -41,7 +41,7 @@ async def accept_agreement(
 
     ip = _client_ip(request)
     agreement = await legal_crud.create_agreement(
-        db, user.id, payload.document_type, payload.document_version, ip
+        db, user.id, user.email, payload.document_type, payload.document_version, ip
     )
     return agreement
 

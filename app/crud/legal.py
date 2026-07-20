@@ -26,12 +26,14 @@ async def get_latest_agreement(
 async def create_agreement(
     db: AsyncSession,
     user_id: uuid.UUID,
+    user_email: str,
     document_type: str,
     document_version: str,
     ip_address: str | None = None,
 ) -> UserAgreementDB:
     agreement = UserAgreementDB(
         user_id=user_id,
+        user_email_snapshot=user_email,
         document_type=document_type,
         document_version=document_version,
         accepted_at=datetime.now(timezone.utc),
