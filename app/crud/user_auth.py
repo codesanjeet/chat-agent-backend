@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import is_expired, otp_expiry
 from app.models.user import OtpCodeDB, UserDB, UserSessionDB
 from app.models.billing import UserPlanDB, UsageDB
+from app.crud.lead import _create_default_lead_form
 import logging
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,15 @@ async def get_or_create_user_by_email(
         await db.refresh(user)
         await _create_default_billing(db, user.id)
 
-        # Fire-and-forget: don't let a flaky email provider fail signup.
+        # New users get a starter lead form (name/address/email/phone/purpose,
+        # phone required) so lead capture works without manual setup.
+        try:
+            await _create_default_lead_form(db, user.id)
+            await db.commit()
+        except Exception:
+            logger.exception("Failed to create default lead form for %s", user.email)
+            await db.rollback()
+
         try:
             await send_welcome_email(user.email)
         except Exception:

@@ -95,7 +95,7 @@ async def run_chat_turn(db: AsyncSession, tenant_id: uuid.UUID, session_id: str,
                 "id": form.id,
                 "name": form.name,
                 "requires_payment": form.requires_payment,
-                "form_schema": form.schema,
+                "form_schema": form.form_schema,
             }
 
     # 5. Persist the assistant's message -- the FULL gallery snapshot goes

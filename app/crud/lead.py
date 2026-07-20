@@ -10,6 +10,68 @@ from app.services.r2_storage import r2
 
 # ── Lead forms (owner-managed templates) ────────────────────────────────────
 
+
+DEFAULT_LEAD_FORM_SCHEMA = {
+    "fields": [
+        {
+            "key": "name",
+            "label": "Name",
+            "type": "text",
+            "prompt": "Could you share your name?",
+            "required": False,
+            "options": None,
+        },
+        {
+            "key": "address",
+            "label": "Address",
+            "type": "text",
+            "prompt": "What's your address?",
+            "required": False,
+            "options": None,
+        },
+        {
+            "key": "email",
+            "label": "Email",
+            "type": "email",
+            "prompt": "What's your email address?",
+            "required": False,
+            "options": None,
+        },
+        {
+            "key": "phone",
+            "label": "Phone number",
+            "type": "phone",
+            "prompt": "What's the best phone number to reach you on?",
+            "required": True,
+            "options": None,
+        },
+        {
+            "key": "purpose",
+            "label": "Purpose",
+            "type": "textarea",
+            "prompt": "What can we help you with?",
+            "required": False,
+            "options": None,
+        },
+    ]
+}
+
+
+async def _create_default_lead_form(db: AsyncSession, user_id: uuid.UUID) -> LeadFormDB:
+    """Every new user gets a starter lead form so their chatbot can capture
+    basic visitor info out of the box. Only phone number is required."""
+    return await create_lead_form(
+        db=db,
+        user_id=user_id,
+        name="General Inquiry",
+        form_schema=DEFAULT_LEAD_FORM_SCHEMA,
+        trigger_intent="contact, inquiry",
+        is_default=True,
+        requires_payment=False,
+    )
+
+
+
 async def _clear_other_defaults(
     db: AsyncSession, user_id: uuid.UUID, exclude_form_id: uuid.UUID | None = None
 ) -> None:
@@ -26,7 +88,7 @@ async def create_lead_form(
     db: AsyncSession,
     user_id: uuid.UUID,
     name: str,
-    schema: dict,
+    form_schema: dict,
     trigger_intent: str | None,
     is_default: bool,
     requires_payment: bool,
@@ -40,7 +102,7 @@ async def create_lead_form(
         trigger_intent=trigger_intent,
         is_default=is_default,
         requires_payment=requires_payment,
-        schema=schema,
+        form_schema=form_schema,
     )
     db.add(form)
     await db.flush()
@@ -66,7 +128,7 @@ async def update_lead_form(
     trigger_intent: str | None,
     is_default: bool | None,
     requires_payment: bool | None,
-    schema: dict | None,
+    form_schema: dict | None,
 ) -> LeadFormDB:
     if name is not None:
         form.name = name
@@ -74,8 +136,8 @@ async def update_lead_form(
         form.trigger_intent = trigger_intent or None
     if requires_payment is not None:
         form.requires_payment = requires_payment
-    if schema is not None:
-        form.schema = schema
+    if form_schema is not None:
+        form.form_schema = form_schema
     if is_default is not None:
         if is_default:
             await _clear_other_defaults(db, form.user_id, exclude_form_id=form.id)

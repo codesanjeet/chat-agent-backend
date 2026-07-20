@@ -41,7 +41,7 @@ class LeadFormCreateIn(BaseModel):
     trigger_intent: str | None = None
     is_default: bool = False
     requires_payment: bool = False
-    schema: LeadFormSchema
+    form_schema: LeadFormSchema
 
 
 class LeadFormUpdateIn(BaseModel):
@@ -52,7 +52,7 @@ class LeadFormUpdateIn(BaseModel):
     trigger_intent: str | None = None
     is_default: bool | None = None
     requires_payment: bool | None = None
-    schema: LeadFormSchema | None = None
+    form_schema: LeadFormSchema | None = None
 
 
 class LeadFormOut(BaseModel):
@@ -61,7 +61,7 @@ class LeadFormOut(BaseModel):
     trigger_intent: str | None
     is_default: bool
     requires_payment: bool
-    schema: dict
+    form_schema: dict
     created_at: datetime
     updated_at: datetime
 

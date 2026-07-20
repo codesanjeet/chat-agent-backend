@@ -160,7 +160,7 @@ async def create_form(
         db,
         user_id=user.id,
         name=payload.name,
-        schema=payload.schema.model_dump(),
+        form_schema=payload.form_schema.model_dump(),
         trigger_intent=payload.trigger_intent,
         is_default=payload.is_default,
         requires_payment=payload.requires_payment,
@@ -209,7 +209,7 @@ async def update_form(
         trigger_intent=payload.trigger_intent,
         is_default=payload.is_default,
         requires_payment=payload.requires_payment,
-        schema=payload.schema.model_dump() if payload.schema is not None else None,
+        form_schema=payload.form_schema.model_dump() if payload.schema is not None else None,
     )
     await db.commit()
     await db.refresh(form)

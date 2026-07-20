@@ -124,7 +124,7 @@ class LeadFormDB(Base):
 
     is_default: Mapped[bool] = mapped_column(default=False)
     requires_payment: Mapped[bool] = mapped_column(default=False)
-    schema: Mapped[dict] = mapped_column(JSON)
+    form_schema: Mapped[dict] = mapped_column(JSON)
     # ordered field defs, e.g.:
     # {"fields": [
     #    {"key": "name", "label": "Name", "type": "text", "prompt": "Could I get your name?", "required": true},
