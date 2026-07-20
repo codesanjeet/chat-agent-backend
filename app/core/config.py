@@ -15,13 +15,12 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     GEMINI_MODEL: str = "gemini-2.5-flash"
     EMBEDDING_MODEL : str = "text-embedding-3-small"
-    LOCAL_UPLOAD_DIR:str = ""
     MAX_UPLOAD_MB : int = 5
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:8000",
+        "https://agent.kiteum.com",
+        "https://api.agent.kiteum.com",
     ]
     
     # # Database
@@ -33,7 +32,7 @@ class Settings(BaseSettings):
     
     # Frontend
     # FRONTEND_URL: str = "http://localhost:3000"
-    FRONTEND_URL: str = "https://edu.kiteum.com"
+    FRONTEND_URL: str = "https://agent.kiteum.com"
     
     # Environment
     ENVIRONMENT: str = "development"
