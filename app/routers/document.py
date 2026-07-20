@@ -18,11 +18,13 @@ from app.schemas.document import (
     ResolveFactsIn,
     TextIn,
     WeblinkIn,
+    FactUpdateIn
 )
 from app.services import extraction
 from app.services.deps import get_current_user
 from app.services.image_validation import validate_and_clean_image
 from app.services.pdf_validation import validate_pdf
+
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -126,6 +128,10 @@ async def confirm_document(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     if document.is_active:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Document already confirmed")
+    # check if it is not configured
+    if not user.is_configured:
+        user.is_configured = True
+        
 
     result = await document_crud.confirm_document(db, user.id, document)
     await db.commit()
@@ -156,6 +162,33 @@ async def resolve_facts(
 async def list_facts(user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     facts = await fact_crud.list_facts(db, user.id)
     return [BusinessFactOut.model_validate(f) for f in facts]
+
+
+
+@router.patch("/facts/{key}", response_model=BusinessFactOut)
+async def update_fact(
+    key: str, payload: FactUpdateIn,
+    user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    if not payload.value.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Value cannot be empty")
+
+    fact = await fact_crud.update_fact_value(db, user.id, key, payload.value)
+    if fact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Fact not found")
+    await db.commit()
+    return BusinessFactOut.model_validate(fact)
+
+
+@router.delete("/facts/{key}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_fact(
+    key: str, user: UserDB = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    deleted = await fact_crud.delete_fact(db, user.id, key)
+    if not deleted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Fact not found")
+    await db.commit()
+    return None
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

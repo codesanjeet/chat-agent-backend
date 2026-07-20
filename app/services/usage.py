@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import math
 from app.models.billing import PlanDB, UsageDB, UserPlanDB
 
-MAX_SINGLE_UPLOAD_TOKENS = 800  # cap per individual document/gallery-image submission
+MAX_SINGLE_UPLOAD_TOKENS = 2500  # cap per individual document/gallery-image submission
 
 
 class BudgetExceededError(Exception):

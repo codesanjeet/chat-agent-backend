@@ -4,13 +4,14 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.chunking import chunk_text  # assumed already present in your codebase
+from app.core.chunking import chunk_text , MAX_CHUNK_TOKENS
 from app.core.tokenizer import count_tokens
 from app.crud import fact as fact_crud
 from app.models.document import Document, DocumentChunk
 from app.services import usage as usage_service
 from app.services.embeddings import embed_texts
-from app.services.extraction import separate_facts_and_content
+from app.services.extraction import separate_facts_and_content,strip_fact_leaks
+
 
 
 def _normalize(text: str) -> str:
@@ -76,10 +77,12 @@ async def update_document_text(db: AsyncSession, document: Document, new_text: s
 # ---------------------------------------------------------------------------
 
 async def confirm_document(db: AsyncSession, tenant_id: uuid.UUID, document: Document) -> dict:
-    """Runs fact-separation, saves non-conflicting facts, then chunks + dedupes
-    + budget-checks + embeds the general content. Content embedding proceeds
-    regardless of fact conflicts (they're independent concerns) -- conflicts
-    are just returned for the business to resolve via resolve_facts()."""
+    """Runs fact-separation (which also pre-splits general content into
+    LLM-sized sections), saves non-conflicting facts, strips any fact text
+    that leaked into a section, then dedupes + budget-checks + embeds the
+    sections. Content embedding proceeds regardless of fact conflicts
+    (they're independent concerns) -- conflicts are just returned for the
+    business to resolve via resolve_facts()."""
 
     split = await separate_facts_and_content(document.extracted_text)
     saved_fact_keys, conflicts = await fact_crud.apply_facts(db, tenant_id, document.id, split.facts)
@@ -88,11 +91,16 @@ async def confirm_document(db: AsyncSession, tenant_id: uuid.UUID, document: Doc
     chunks_skipped = 0
     tokens_spent = 0
 
-    raw_chunks = chunk_text(split.general_content) if split.general_content.strip() else []
+    cleaned_sections = strip_fact_leaks(split.sections, split.facts)
+
+    raw_chunks = []
+    for section in cleaned_sections:
+        if count_tokens(section) > MAX_CHUNK_TOKENS:
+            raw_chunks.extend(chunk_text(section))  # fallback only, rarely hit
+        else:
+            raw_chunks.append(section)
 
     if raw_chunks:
-        # De-dupe against existing chunks for this tenant BEFORE counting tokens
-        # or calling the embeddings API -- duplicates cost nothing.
         candidate_hashes = [_content_hash(c) for c in raw_chunks]
         existing_result = await db.execute(
             select(DocumentChunk.content_hash).where(
@@ -114,7 +122,6 @@ async def confirm_document(db: AsyncSession, tenant_id: uuid.UUID, document: Doc
             token_counts = [count_tokens(t) for t, _ in new_chunks]
             total_new_tokens = sum(token_counts)
 
-            # Raises 402 and aborts embedding if this would exceed the tenant's budget.
             await usage_service.reserve_tokens(db, tenant_id, total_new_tokens)
 
             vectors = await embed_texts([t for t, _ in new_chunks])
@@ -148,7 +155,6 @@ async def confirm_document(db: AsyncSession, tenant_id: uuid.UUID, document: Doc
         "tokens_remaining": remaining,
     }
 
-
 # ---------------------------------------------------------------------------
 # Delete -- releases embedding budget for whatever was actually embedded
 # ---------------------------------------------------------------------------
@@ -163,7 +169,6 @@ async def delete_document(db: AsyncSession, tenant_id: uuid.UUID, document: Docu
 
 
 
-# app/curd/document.py
 
 async def confirm_qa_document(
     db: AsyncSession,
@@ -171,59 +176,80 @@ async def confirm_qa_document(
     document: Document,
     question: str,
 ) -> dict:
-    """Variant of confirm_document for escalation-resolved Q&A pairs. Chunks
-    the answer normally, but re-prepends the question to EVERY resulting
-    chunk -- not just once at the top of the source text -- so a long answer
-    that gets split across chunk boundaries never produces an orphan chunk
-    that's missing what question it's actually answering."""
+    """Variant of confirm_document for escalation-resolved Q&A pairs.
 
-    raw_chunks = chunk_text(document.extracted_text)
-    # Guard against chunk_text finding no boundaries and returning nothing
-    # for very short answers -- fall back to the whole text as one chunk.
-    if not raw_chunks:
-        raw_chunks = [document.extracted_text]
+    Runs the same fact-separation pass as confirm_document: if the answer
+    contains a lookup-style fact (e.g. "we're open until 9pm on weekends"),
+    it's saved to the facts table via apply_facts, same conflict-checking
+    as any other source. Whatever general explanation remains gets chunked
+    and embedded, with the question re-prepended to EVERY resulting chunk --
+    not just once at the top of the source text -- so a long answer that
+    gets split across chunk boundaries never produces an orphan chunk
+    that's missing what question it's actually answering.
 
-    contextualized_chunks = [
-        f"Question: {question}\nAnswer: {c}" if not c.strip().startswith("Question:") else c
-        for c in raw_chunks
-    ]
+    If the whole answer turns out to be just a fact (e.g. the answer to
+    "what are your weekend hours" is just "9am-9pm"), separate_facts_and_content
+    returns an empty/near-empty sections list -- in that case we skip
+    chunking and embedding entirely. There's nothing worth vector-searching
+    when the content is already captured as an exact-match fact, so this
+    also saves an embedding call that would've just stored a near-useless
+    single-line chunk.
+    """
+
+    split = await separate_facts_and_content(document.extracted_text)
+    saved_fact_keys, conflicts = await fact_crud.apply_facts(db, tenant_id, document.id, split.facts)
+
+    cleaned_sections = strip_fact_leaks(split.sections, split.facts)
 
     chunks_embedded = 0
     chunks_skipped = 0
     tokens_spent = 0
 
-    candidate_hashes = [_content_hash(c) for c in contextualized_chunks]
-    existing_result = await db.execute(
-        select(DocumentChunk.content_hash).where(
-            DocumentChunk.tenant_id == tenant_id, DocumentChunk.content_hash.in_(candidate_hashes)
-        )
-    )
-    existing_hashes = {row[0] for row in existing_result.all()}
+    raw_chunks: list[str] = []
+    for section in cleaned_sections:
+        if count_tokens(section) > MAX_CHUNK_TOKENS:
+            raw_chunks.extend(chunk_text(section))  # fallback only
+        else:
+            raw_chunks.append(section)
 
-    new_chunks = []
-    seen_in_batch = set()
-    for text, h in zip(contextualized_chunks, candidate_hashes):
-        if h in existing_hashes or h in seen_in_batch:
-            chunks_skipped += 1
-            continue
-        seen_in_batch.add(h)
-        new_chunks.append((text, h))
+    if raw_chunks:
+        contextualized_chunks = [
+            f"Question: {question}\nAnswer: {c}" if not c.strip().startswith("Question:") else c
+            for c in raw_chunks
+        ]
 
-    if new_chunks:
-        token_counts = [count_tokens(t) for t, _ in new_chunks]
-        total_new_tokens = sum(token_counts)
-        await usage_service.reserve_tokens(db, tenant_id, total_new_tokens)
-
-        vectors = await embed_texts([t for t, _ in new_chunks])
-        for (text, h), token_count, vector in zip(new_chunks, token_counts, vectors):
-            db.add(
-                DocumentChunk(
-                    document_id=document.id, tenant_id=tenant_id, chunk_text=text,
-                    content_hash=h, token_count=token_count, embedding=vector,
-                )
+        candidate_hashes = [_content_hash(c) for c in contextualized_chunks]
+        existing_result = await db.execute(
+            select(DocumentChunk.content_hash).where(
+                DocumentChunk.tenant_id == tenant_id, DocumentChunk.content_hash.in_(candidate_hashes)
             )
-        chunks_embedded = len(new_chunks)
-        tokens_spent = total_new_tokens
+        )
+        existing_hashes = {row[0] for row in existing_result.all()}
+
+        new_chunks = []
+        seen_in_batch = set()
+        for text, h in zip(contextualized_chunks, candidate_hashes):
+            if h in existing_hashes or h in seen_in_batch:
+                chunks_skipped += 1
+                continue
+            seen_in_batch.add(h)
+            new_chunks.append((text, h))
+
+        if new_chunks:
+            token_counts = [count_tokens(t) for t, _ in new_chunks]
+            total_new_tokens = sum(token_counts)
+            await usage_service.reserve_tokens(db, tenant_id, total_new_tokens)
+
+            vectors = await embed_texts([t for t, _ in new_chunks])
+            for (text, h), token_count, vector in zip(new_chunks, token_counts, vectors):
+                db.add(
+                    DocumentChunk(
+                        document_id=document.id, tenant_id=tenant_id, chunk_text=text,
+                        content_hash=h, token_count=token_count, embedding=vector,
+                    )
+                )
+            chunks_embedded = len(new_chunks)
+            tokens_spent = total_new_tokens
 
     document.total_tokens = tokens_spent
     document.is_active = True
@@ -231,6 +257,8 @@ async def confirm_qa_document(
 
     return {
         "document": document,
+        "facts_saved": saved_fact_keys,
+        "conflicts": conflicts,
         "chunks_embedded": chunks_embedded,
         "chunks_skipped_as_duplicate": chunks_skipped,
         "tokens_used": tokens_spent,

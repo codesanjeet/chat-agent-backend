@@ -13,6 +13,7 @@ from .routers import user as user_router
 from .routers import lead as lead_router
 from .routers import chat as chat_router
 from .routers import setttings as setting_router
+from .routers import legal as legal_router
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ app.include_router(user_router.router)
 app.include_router(lead_router.router)
 app.include_router(chat_router.router)
 app.include_router(setting_router.router)
+app.include_router(legal_router.router)
 
 
 

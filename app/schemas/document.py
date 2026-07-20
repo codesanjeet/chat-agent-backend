@@ -72,3 +72,7 @@ class BusinessFactOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FactUpdateIn(BaseModel):
+    value: str

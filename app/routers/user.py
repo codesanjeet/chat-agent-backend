@@ -9,8 +9,11 @@ from app.schemas.user import CompleteProfileRequest
 from app.schemas.user_auth import UserOut
 from app.services.deps import get_current_user
 from sqlalchemy import select
-
+from app.crud import legal as legal_crud
+from app.routers.legal import CURRENT_VERSIONS
 router = APIRouter(prefix="/user", tags=["profile"])
+
+
 
 
 @router.put("/profile/complete", response_model=UserOut)
@@ -23,6 +26,14 @@ async def complete_profile_endpoint(
     frontend route guard can stop redirecting to /profile. Does NOT touch
     is_configured -- that only flips true after onboarding (knowledge upload +
     lead form) completes, handled by a separate endpoint later."""
+    for doc_type, expected_version in CURRENT_VERSIONS.items():
+        agreement = await legal_crud.get_latest_agreement(db, user.id, doc_type)
+        if agreement is None or agreement.document_version != expected_version:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"You need to accept the current {doc_type} before continuing.",
+            )
+
     updated_user = await complete_profile(
         db,
         user=user,

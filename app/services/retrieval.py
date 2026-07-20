@@ -11,7 +11,7 @@ from app.models.gallery import GalleryItemDB, GalleryItemType
 
 
 async def search_document_chunks(
-    db: AsyncSession, tenant_id: uuid.UUID, query_vector: list[float], top_k: int = 5
+    db: AsyncSession, tenant_id: uuid.UUID, query_vector: list[float], top_k: int = 4
 ) -> list[DocumentChunk]:
     result = await db.execute(
         select(DocumentChunk)
@@ -23,7 +23,7 @@ async def search_document_chunks(
 
 
 async def search_gallery_items(
-    db: AsyncSession, tenant_id: uuid.UUID, query_vector: list[float], top_k: int = 3
+    db: AsyncSession, tenant_id: uuid.UUID, query_vector: list[float], top_k: int = 5
 ) -> list[dict]:
     """Rank BOTH images and folders together by embedding similarity -- a
     query can match a folder's own description ("2BHK in Patliputra") just

@@ -209,24 +209,31 @@ async def extract_text_from_weblink(url: str) -> ExtractionResult:
 FACT_SPLIT_PROMPT = """You are organizing business content for a chatbot knowledge base.
 
 Given the text below, split it into:
-1. "facts": short, exact, volatile lookup facts -- things like hours, phone
-   number, address, pricing, policies, refund rules. Each fact is a
-   {"key": "snake_case_key", "value": "the exact value"} pair. Keys should be
-   stable and reusable, e.g. "opening_hours", "phone_number", "refund_policy".
-   Only extract facts that are explicitly and clearly stated -- do not invent
-   or infer values.
-2. "general_content": everything else -- descriptive, narrative content that's
-   fine to answer via semantic search rather than exact lookup. Keep this in
-   the original wording as much as possible, just with the extracted facts
-   removed from it (do not summarize or shorten the rest).
+1. "facts": short, exact, volatile lookup facts -- hours, phone number,
+   address, pricing, policies, refund rules. Each fact is a
+   {"key": "snake_case_key", "value": "the exact value"} pair. Only extract
+   facts explicitly and clearly stated -- do not invent or infer values.
+2. "sections": the REMAINING descriptive/narrative content, split into a list
+   of self-contained knowledge sections. Each section should:
+   - Cover one coherent topic or idea (don't split a thought mid-way)
+   - Be roughly 40-200 words -- merge small related pieces of info together,
+     don't stretch a single small fact into a long paragraph
+   - NOT repeat or restate anything already captured in "facts" above
+   - Never exceed ~250 words -- split further if a topic is that large
 
 Return ONLY JSON:
-{"facts": [{"key": "...", "value": "..."}], "general_content": "..."}
+{"facts": [{"key": "...", "value": "..."}], "sections": ["...", "..."]}
 
 Text:
 ---
 {content}
 ---"""
+
+
+@dataclass
+class FactSplitResult:
+    facts: list[dict]
+    sections: list[str]   
 
 
 async def separate_facts_and_content(text: str) -> FactSplitResult:
@@ -237,7 +244,7 @@ async def separate_facts_and_content(text: str) -> FactSplitResult:
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     data = _extract_json(response.text)
-    return FactSplitResult(facts=data.get("facts", []), general_content=data.get("general_content", text))
+    return FactSplitResult(facts=data.get("facts", []), sections=data.get("sections", [text]))
 
 
 MODERATION_PROMPT = """You are a content-safety filter for a local business's public-facing
@@ -266,3 +273,26 @@ async def moderate_gallery_description(description: str) -> ModerationResult:
     )
     data = _extract_json(response.text)
     return ModerationResult(is_safe=data.get("is_safe", False), reason=data.get("reason"))
+
+
+
+
+# fact guard def strip_fact_leaks(sections: list[str], facts: list[dict]) -> list[str]:
+def strip_fact_leaks(sections: list[str], facts: list[dict]) -> list[str]:
+    """Deterministic backstop -- if a fact's value still appears verbatim in
+    a section despite the prompt asking the model not to repeat it, drop that
+    line from the section instead of trusting the model's compliance."""
+    fact_values = {f["value"].strip().lower() for f in facts if f.get("value")}
+    cleaned = []
+    for section in sections:
+        lines = section.split("\n")
+        kept = [ln for ln in lines if ln.strip().lower() not in fact_values]
+        text = "\n".join(kept).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+
+
+

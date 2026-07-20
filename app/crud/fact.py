@@ -74,3 +74,14 @@ async def delete_fact(db: AsyncSession, tenant_id: uuid.UUID, key: str) -> bool:
     await db.delete(existing)
     await db.flush()
     return True
+
+
+async def update_fact_value(db: AsyncSession, tenant_id: uuid.UUID, key: str, new_value: str) -> BusinessFactDB | None:
+    """Direct manual edit by the business, independent of any document
+    upload/conflict flow. Returns None if the key doesn't exist."""
+    existing = await get_fact_by_key(db, tenant_id, key)
+    if existing is None:
+        return None
+    existing.value = new_value.strip()
+    await db.flush()
+    return existing

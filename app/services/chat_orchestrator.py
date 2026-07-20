@@ -37,8 +37,8 @@ async def run_chat_turn(db: AsyncSession, tenant_id: uuid.UUID, session_id: str,
     # 2. Gather grounding context.
     query_vector = await embed_text(user_message)
 
-    chunks = await retrieval.search_document_chunks(db, tenant_id, query_vector, top_k=5)
-    gallery_hits = await retrieval.search_gallery_items(db, tenant_id, query_vector, top_k=3)
+    chunks = await retrieval.search_document_chunks(db, tenant_id, query_vector, top_k=4)
+    gallery_hits = await retrieval.search_gallery_items(db, tenant_id, query_vector, top_k=5)
     facts = await fact_crud.list_facts(db, tenant_id)
     links_record = await gallery_crud.get_business_links(db, tenant_id)
     links = links_record.links if links_record else []
