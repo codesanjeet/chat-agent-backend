@@ -69,8 +69,8 @@ async def get_or_create_user_by_email(
             await _create_default_lead_form(db, user.id)
             await db.commit()
         except Exception:
-            logger.exception("Failed to create default lead form for %s", user.email)
             await db.rollback()
+            logger.exception("Failed to create default lead form for %s", email)
 
         try:
             await send_welcome_email(user.email)
@@ -84,6 +84,7 @@ async def get_or_create_user_by_email(
         await db.refresh(user)
 
     return user
+
 
 async def touch_last_login(db: AsyncSession, user: UserDB) -> None:
     user.last_login_at = datetime.now(timezone.utc)

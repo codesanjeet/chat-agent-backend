@@ -10,8 +10,7 @@ from app.services import usage as usage_service
 from app.services.embeddings import embed_text
 from app.services.extraction import moderate_gallery_description
 from app.services.r2_storage import r2
-
-
+from app.models.billing import UsageDB
 async def _validate_parent_folder(db: AsyncSession, tenant_id: uuid.UUID, parent_id: uuid.UUID | None) -> None:
     if parent_id is None:
         return
@@ -33,7 +32,21 @@ async def _embed_description(db: AsyncSession, tenant_id: uuid.UUID, description
     vector = await embed_text(description)
     return token_count, vector
 
+# storage
+async def reserve_storage(db: AsyncSession, tenant_id: uuid.UUID, size_bytes: int) -> None:
+    mb = size_bytes / (1024 * 1024)
+    result = await db.execute(select(UsageDB).where(UsageDB.user_id == tenant_id))
+    usage = result.scalar_one()
+    usage.storage_used_mb += mb
+    await db.flush()
 
+
+async def release_storage(db: AsyncSession, tenant_id: uuid.UUID, size_bytes: int) -> None:
+    mb = size_bytes / (1024 * 1024)
+    result = await db.execute(select(UsageDB).where(UsageDB.user_id == tenant_id))
+    usage = result.scalar_one()
+    usage.storage_used_mb = max(0.0, usage.storage_used_mb - mb)
+    await db.flush()
 # ── Create ───────────────────────────────────────────────────────────────────
 
 async def create_gallery_folder(
@@ -87,7 +100,7 @@ async def create_gallery_image(
     token_count, vector = await _embed_description(db, tenant_id, description)
 
     key = r2.build_gallery_key(tenant_id, parent_id, filename)
-    await r2.upload(key, file_bytes, content_type)
+    await reserve_storage(db, tenant_id, len(file_bytes))
 
     image = GalleryItemDB(
         tenant_id=tenant_id,
@@ -183,10 +196,16 @@ async def update_gallery_item(
 async def delete_gallery_item(db: AsyncSession, tenant_id: uuid.UUID, item: GalleryItemDB) -> None:
     """Deleting a folder wipes its entire subtree: every nested folder and
     image row in the DB (cascade), every image's R2 object, and releases the
-    token budget every description in that subtree was holding."""
+    token + storage budget every description/file in that subtree was holding."""
     rows = await _collect_subtree(db, item.id)
     keys_to_purge = [r.r2_key for r in rows if r.item_type == GalleryItemType.IMAGE and r.r2_key]
     tokens_to_release = sum(r.token_count or 0 for r in rows)
+
+    # Look up each object's size BEFORE deleting it -- head() returns {}
+    # (size 0) if the object is already gone, so this degrades safely.
+    bytes_to_release = 0
+    for key in keys_to_purge:
+        bytes_to_release += await r2.size(key)
 
     await db.delete(item)  # cascades to all descendant rows
     await db.flush()
@@ -196,6 +215,8 @@ async def delete_gallery_item(db: AsyncSession, tenant_id: uuid.UUID, item: Gall
 
     if tokens_to_release:
         await usage_service.release_tokens(db, tenant_id, tokens_to_release)
+    if bytes_to_release:
+        await release_storage(db, tenant_id, bytes_to_release)
 
 
 # ── Business links ───────────────────────────────────────────────────────────
@@ -205,10 +226,25 @@ async def get_business_links(db: AsyncSession, tenant_id: uuid.UUID) -> Business
     return result.scalar_one_or_none()
 
 
+
+def _normalize_links(links: list[dict]) -> list[dict]:
+    """Ensures every link URL has an explicit scheme. Users often type
+    'instagram.com/foo' without a protocol -- browsers/anchors need
+    http(s):// or the link is treated as relative and breaks."""
+    normalized = []
+    for link in links:
+        url = (link.get("url") or "").strip()
+        if url and not url.lower().startswith(("http://", "https://")):
+            url = f"https://{url}"
+        normalized.append({**link, "url": url})
+    return normalized
+
 async def upsert_business_links(db: AsyncSession, tenant_id: uuid.UUID, links: list[dict]) -> BusinessLinksDB:
     """Replaces the full link set for a tenant. `links` is a plain list of
     {"platform", "url", "label"} dicts -- caller (router) is responsible for
     turning validated Pydantic items into dicts before calling this."""
+    links = _normalize_links(links)
+
     record = await get_business_links(db, tenant_id)
     if record is None:
         record = BusinessLinksDB(tenant_id=tenant_id, links=links)
@@ -217,3 +253,4 @@ async def upsert_business_links(db: AsyncSession, tenant_id: uuid.UUID, links: l
         record.links = links
     await db.flush()
     return record
+

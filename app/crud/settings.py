@@ -8,6 +8,7 @@ from app.models.billing import PlanDB, UsageDB, UserPlanDB
 from app.models.user import UserDB
 from app.schemas.settings import UsageOut  # adjust import path to wherever UsageOut actually lives
 from app.services.r2_storage import r2
+from .gallery import release_storage,reserve_storage
 
 # Minimum fields required before a business profile counts as "complete" --
 # drives the profile_completed flag shown in onboarding/dashboard nudges.
@@ -95,22 +96,41 @@ def _key_from_url(url: str | None) -> str | None:
 
 
 async def _upload_profile_asset(
-    tenant_id: uuid.UUID, asset: str, file: UploadFile, content: bytes, content_type: str, old_url: str | None
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    asset: str,
+    file: UploadFile,
+    content: bytes,
+    content_type: str,
+    old_url: str | None,
 ) -> str:
     unique_asset = f"{uuid.uuid4().hex}_{asset}"
     new_key = r2.build_profile_asset_key(tenant_id, unique_asset, file.filename or "")
+
+    old_key = _key_from_url(old_url)
+    # Look up the old file's size BEFORE it's deleted, so we can net the
+    # storage delta instead of just adding the new file's size on top.
+    old_size = await r2.size(old_key) if old_key else 0
+
     await r2.upload(new_key, content, content_type)  # <-- detected type, not file.content_type
     new_url = r2.public_url(new_key)
-    old_key = _key_from_url(old_url)
+
     if old_key and old_key != new_key:
         await r2.delete(old_key)
+
+    delta = len(content) - old_size
+    if delta > 0:
+        await reserve_storage(db, tenant_id, delta)
+    elif delta < 0:
+        await release_storage(db, tenant_id, -delta)
+
     return new_url
 
 
 async def set_logo_from_upload(
     db: AsyncSession, user: UserDB, file: UploadFile, content: bytes, content_type: str
 ) -> UserDB:
-    url = await _upload_profile_asset(user.id, "logo", file, content, content_type, old_url=user.logo)
+    url = await _upload_profile_asset(db, user.id, "logo", file, content, content_type, old_url=user.logo)
     user.logo = url
     await db.flush()
     return user
@@ -120,7 +140,10 @@ async def set_logo_from_upload(
 async def clear_logo(db: AsyncSession, user: UserDB) -> UserDB:
     old_key = _key_from_url(user.logo)
     if old_key:
+        old_size = await r2.size(old_key)
         await r2.delete(old_key)
+        if old_size:
+            await release_storage(db, user.id, old_size)
     user.logo = None
     await db.flush()
     return user
@@ -129,7 +152,7 @@ async def clear_logo(db: AsyncSession, user: UserDB) -> UserDB:
 async def set_payment_qr_from_upload(
     db: AsyncSession, user: UserDB, file: UploadFile, content: bytes, content_type: str
 ) -> UserDB:
-    url = await _upload_profile_asset(user.id, "qr", file, content, content_type, old_url=user.payment_qr_image)
+    url = await _upload_profile_asset(db, user.id, "qr", file, content, content_type, old_url=user.payment_qr_image)
     user.payment_qr_image = url
     await db.flush()
     return user
@@ -138,7 +161,10 @@ async def set_payment_qr_from_upload(
 async def clear_payment_qr(db: AsyncSession, user: UserDB) -> UserDB:
     old_key = _key_from_url(user.payment_qr_image)
     if old_key:
+        old_size = await r2.size(old_key)
         await r2.delete(old_key)
+        if old_size:
+            await release_storage(db, user.id, old_size)
     user.payment_qr_image = None
     await db.flush()
     return user
